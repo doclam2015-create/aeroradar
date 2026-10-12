@@ -96,7 +96,6 @@ struct AirportDetail: View {
 
                 Button {
                     radar.focus(on: airport.coordinate)
-                    radar.span = MKCoordinateSpan(latitudeDelta: 1.2, longitudeDelta: 1.2)
                     goToRadar()
                 } label: { Label("Ver en el radar", systemImage: "dot.radiowaves.left.and.right").frame(maxWidth: .infinity) }
                     .buttonStyle(.borderedProminent).controlSize(.large)

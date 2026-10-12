@@ -7,13 +7,10 @@ struct RadarView: View {
     @Environment(LocationProvider.self) private var location
     @Environment(\.horizontalSizeClass) private var hsize
 
-    @State private var position: MapCameraPosition = .automatic
-    @State private var cameraDistance: Double = 600_000
     @State private var showSearch = false
     @State private var showFilters = false
     @State private var showOverhead = false
     @State private var showDetail = false
-    @State private var didSetInitial = false
 
     var body: some View {
         @Bindable var radar = radar
@@ -49,7 +46,7 @@ struct RadarView: View {
             showSearch = false
             if let region {
                 radar.follow = false; radar.cockpit = false
-                withAnimation(.easeInOut(duration: 1.2)) { position = .region(region) }
+                radar.cameraRequest = CameraRequest(region: region)
             }
             if let a { radar.select(a); showDetail = true; fly(to: a.coordinate, distance: 300_000) }
         } }
@@ -58,20 +55,12 @@ struct RadarView: View {
             showOverhead = false; radar.select(a); showDetail = true
         } }
         .onChange(of: radar.selectedHex) { _, h in if h != nil && hsize != .compact { showDetail = true } }
-        .onChange(of: radar.tick) { _, _ in followIfNeeded() }
         .onChange(of: radar.cockpit) { _, on in
             if on {
                 if hsize == .compact { showDetail = false }
-                followIfNeeded(animated: true)
             } else if let a = radar.selected {
-                fly(to: radar.position(of: a), distance: 250_000)
+                fly(to: a.coordinate, distance: 250_000)
             }
-        }
-        .onChange(of: radar.follow) { _, on in if on { followIfNeeded(animated: true) } }
-        .onAppear {
-            guard !didSetInitial else { return }
-            didSetInitial = true
-            position = .region(MKCoordinateRegion(center: radar.center, span: radar.span))
         }
         .preferredColorScheme(prefs.forceDark ? .dark : nil)
     }
@@ -79,106 +68,28 @@ struct RadarView: View {
     // MARK: Mapa
 
     private var map: some View {
-        let vis = radar.visible
-        let iconScale: CGFloat = radar.span.latitudeDelta > 40 ? 0.5 : radar.span.latitudeDelta > 15 ? 0.65 : radar.span.latitudeDelta > 6 ? 0.8 : 1
-        let labelsOn = prefs.showLabels && (radar.span.latitudeDelta < 0.8 || (radar.span.latitudeDelta < 3 && vis.count < 60))
-        return Map(position: $position) {
-            if prefs.showTerminator {
-                ForEach(Array(Terminator.nightPolygons(at: radar.tick).enumerated()), id: \.offset) { _, poly in
-                    MapPolygon(coordinates: poly).foregroundStyle(.black.opacity(0.28))
-                }
-            }
-            if prefs.showAirports && radar.span.latitudeDelta < 14 {
-                ForEach(AirportDB.inRegion(center: radar.center, latDelta: radar.span.latitudeDelta,
-                                           lonDelta: radar.span.longitudeDelta, largeOnly: radar.span.latitudeDelta > 4)) { ap in
-                    Annotation(ap.iata, coordinate: ap.coordinate, anchor: .center) {
-                        Image(systemName: "airplane.circle.fill")
-                            .font(.system(size: ap.large ? 13 : 10))
-                            .foregroundStyle(.white, .indigo.opacity(0.85))
-                    }
-                    .annotationTitles(radar.span.latitudeDelta < 6 ? .automatic : .hidden)
-                }
-            }
-            if prefs.showTrails && radar.span.latitudeDelta < 5 {
-                ForEach(vis.filter { $0.hex != radar.selectedHex }) { a in
-                    if let t = radar.trails[a.hex], t.count > 1 {
-                        MapPolyline(coordinates: t.map(\.coordinate) + [radar.position(of: a)])
-                            .stroke(altitudeColor(a.altitude, onGround: a.onGround).opacity(0.45), lineWidth: 1.5)
-                    }
-                }
-            }
-            if let h = radar.hovered, h.hex != radar.selectedHex {
-                Annotation("", coordinate: radar.position(of: h), anchor: .bottom) {
-                    HoverCard(aircraft: h).environment(prefs).padding(.bottom, 26).allowsHitTesting(false)
-                }
-                .annotationTitles(.hidden)
-            }
-            if let a = radar.selected {
-                let trail = radar.fullTrail(for: a.hex)
-                if trail.count > 1 {
-                    MapPolyline(coordinates: trail.map(\.coordinate) + [radar.position(of: a)])
-                        .stroke(Gradient(colors: trail.map { altitudeColor($0.alt, onGround: $0.alt == 0) }),
-                                style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
-                }
-                if let r = radar.selectedRoute {
-                    MapPolyline(coordinates: Geo.greatCircle(radar.position(of: a), r.destination.coordinate))
-                        .stroke(.white.opacity(0.55), style: StrokeStyle(lineWidth: 2, dash: [6, 6]))
-                    Annotation(r.origin.code, coordinate: r.origin.coordinate) { routeDot(.green) }
-                    Annotation(r.destination.code, coordinate: r.destination.coordinate) { routeDot(.orange) }
-                }
-            }
-            ForEach(vis) { a in
-                Annotation(a.displayName, coordinate: radar.position(of: a), anchor: .center) {
-                    PlaneMarker(aircraft: a, selected: a.hex == radar.selectedHex, mapHeading: radar.mapHeading, scale: iconScale,
-                                showLabel: a.hex == radar.selectedHex || labelsOn,
-                                watched: radar.isWatched(a))
-                        .onTapGesture { radar.select(a) ; if hsize == .compact { showDetail = false } }
-                        .onHover { radar.hover(a.hex, $0) }
-                }
-                .annotationTitles(.hidden)
-            }
-            UserAnnotation()
-        }
-        .mapStyle(radar.cockpit ? .hybrid(elevation: .realistic, pointsOfInterest: .excludingAll) : prefs.mapStyle)
-        .safeAreaPadding(.top, 64)
-        .mapControls {
-            MapCompass()
-            MapScaleView()
-            MapPitchToggle()
-            MapUserLocationButton()
-            #if os(macOS)
-            MapZoomStepper()
-            #endif
-        }
-        .onMapCameraChange(frequency: .onEnd) { ctx in
-            cameraDistance = ctx.camera.distance
-            radar.updateRegion(ctx.region, heading: ctx.camera.heading)
-        }
+        RadarMapView(radar: radar, prefs: prefs)
+            .ignoresSafeArea()
+            .overlay(alignment: .topLeading) { hoverOverlay }
     }
 
-    private func routeDot(_ c: Color) -> some View {
-        Circle().fill(c).frame(width: 12, height: 12).overlay(Circle().stroke(.white, lineWidth: 2)).shadow(radius: 3)
+    /// Tarjeta flotante al pasar el puntero (Mac / iPad con trackpad)
+    @ViewBuilder private var hoverOverlay: some View {
+        if let h = radar.hovered, h.hex != radar.selectedHex {
+            GeometryReader { g in
+                let p = radar.hoverPoint
+                let x = min(max(p.x - 182, 8), g.size.width - 372)
+                let y = p.y > 470 ? p.y - 460 : p.y + 30
+                HoverCard(aircraft: h)
+                    .offset(x: x, y: y)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
     }
 
     private func fly(to c: CLLocationCoordinate2D, distance: Double) {
-        withAnimation(.easeInOut(duration: 1.2)) {
-            position = .camera(MapCamera(centerCoordinate: c, distance: distance))
-        }
-    }
-
-    private func followIfNeeded(animated: Bool = false) {
-        guard radar.follow, let a = radar.selected else { return }
-        let c = radar.position(of: a)
-        let cam: MapCamera
-        if radar.cockpit {
-            // Cámara detrás del avión, mirando en su rumbo, con relieve 3D (más alto el avión → más lejos la cámara)
-            let altM = Double(a.altitude ?? 3000) * 0.3048
-            cam = MapCamera(centerCoordinate: c, distance: min(max(altM * 2.2, 3000), 40_000), heading: a.track ?? 0, pitch: 70)
-        } else {
-            cam = MapCamera(centerCoordinate: c, distance: min(cameraDistance, 1_500_000))
-        }
-        if animated { withAnimation(.easeInOut(duration: 1.5)) { position = .camera(cam) } }
-        else { position = .camera(cam) }
+        radar.cameraRequest = CameraRequest(center: c, distance: distance)
     }
 
     // MARK: Barras
@@ -304,54 +215,6 @@ struct RadarView: View {
             .padding(.horizontal, 14).padding(.vertical, 8)
             .background(color.gradient, in: Capsule())
             .foregroundStyle(.white)
-    }
-}
-
-// MARK: - Marcador de avión
-
-struct PlaneMarker: View {
-    let aircraft: Aircraft
-    let selected: Bool
-    let mapHeading: Double
-    var scale: CGFloat = 1
-    let showLabel: Bool
-    let watched: Bool
-    @State private var pulse = false
-
-    var body: some View {
-        let color = aircraft.isEmergency ? Color.red : altitudeColor(aircraft.altitude, onGround: aircraft.onGround)
-        ZStack {
-            if selected || aircraft.isEmergency {
-                Circle()
-                    .stroke(aircraft.isEmergency ? .red : .white, lineWidth: 2)
-                    .frame(width: aircraft.sizeClass * 2.1, height: aircraft.sizeClass * 2.1)
-                    .scaleEffect(pulse ? 1.25 : 0.9)
-                    .opacity(pulse ? 0.2 : 0.9)
-                    .onAppear { withAnimation(.easeInOut(duration: 1).repeatForever(autoreverses: true)) { pulse = true } }
-            }
-            Image(systemName: aircraft.isHelicopter ? "fanblades.fill" : "airplane")
-                .font(.system(size: aircraft.sizeClass * (selected ? 1.3 : scale), weight: .bold))
-                .foregroundStyle(selected ? .white : color)
-                .shadow(color: .black.opacity(0.65), radius: 1.5, x: 0, y: 1)
-                .rotationEffect(.degrees((aircraft.track ?? 0) - mapHeading - (aircraft.isHelicopter ? 0 : 90)))
-            if watched {
-                Image(systemName: "star.fill").font(.system(size: 8)).foregroundStyle(.yellow).offset(x: 12, y: -12)
-            }
-        }
-        .frame(width: 44, height: 44)
-        .contentShape(Rectangle())
-        .overlay(alignment: .bottom) {
-            if showLabel {
-                Text(aircraft.displayName)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .padding(.horizontal, 5).padding(.vertical, 1.5)
-                    .background(selected ? Color.orange : .black.opacity(0.6), in: RoundedRectangle(cornerRadius: 4))
-                    .foregroundStyle(.white)
-                    .fixedSize()
-                    .offset(y: 14)
-            }
-        }
-        .accessibilityLabel("\(aircraft.displayName), \(aircraft.typeDesc ?? "")")
     }
 }
 

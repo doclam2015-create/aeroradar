@@ -179,7 +179,14 @@ final class RadarStore {
     var aircraft: [String: Aircraft] = [:]
     var trails: [String: [TrailPoint]] = [:]
     var mode: RadarMode = .area { didSet { aircraft = [:]; trails = [:]; Task { await refresh() } } }
-    var filters = RadarFilters()
+    var filters = RadarFilters() { didSet { recomputeVisible() } }
+    /// Aviones a dibujar (calculado una vez por actualización, no en cada fotograma)
+    private(set) var visible: [Aircraft] = []
+    /// Aumenta cada vez que cambian los datos: el mapa solo se sincroniza cuando cambia
+    private(set) var dataVersion = 0
+    var cameraRequest: CameraRequest?
+    var hoverPoint: CGPoint = .zero
+    private var pendingRefresh = false
     var center = CLLocationCoordinate2D(latitude: -33.45, longitude: -70.67)
     var span = MKCoordinateSpan(latitudeDelta: 6, longitudeDelta: 6)
     var mapHeading: Double = 0
@@ -223,7 +230,6 @@ final class RadarStore {
     private var lastWatchCheck = Date.distantPast
 
     private var loop: Task<Void, Never>?
-    private var ticker: Task<Void, Never>?
 
     init(prefs: Prefs) {
         self.prefs = prefs
@@ -239,7 +245,12 @@ final class RadarStore {
 
     var selected: Aircraft? { selectedHex.flatMap { aircraft[$0] ?? watchHits[$0] } }
 
-    var visible: [Aircraft] {
+    func recomputeVisible() {
+        visible = computeVisible()
+        dataVersion += 1
+    }
+
+    private func computeVisible() -> [Aircraft] {
         let list = aircraft.values.filter { filters.matches($0) }
         guard list.count > prefs.maxAircraft else { return list }
         if span.latitudeDelta > 20 {
@@ -286,14 +297,6 @@ final class RadarStore {
                 try? await Task.sleep(for: .seconds(s))
             }
         }
-        ticker = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(1))
-                // En vistas continentales el movimiento es imperceptible: no se anima (ahorra batería)
-                guard let self, self.prefs.smoothMotion, self.span.latitudeDelta < 15 || self.follow else { continue }
-                withAnimation(.linear(duration: 1)) { self.tick = .now }
-            }
-        }
     }
 
     func updateRegion(_ r: MKCoordinateRegion, heading: Double) {
@@ -303,11 +306,17 @@ final class RadarStore {
         UserDefaults.standard.set(r.center.longitude, forKey: "lastLon")
         UserDefaults.standard.set(r.span.latitudeDelta, forKey: "lastSpan")
         if moved && mode == .area { Task { await refresh() } }
+        else if span.latitudeDelta > 20 || visible.count >= prefs.maxAircraft { recomputeVisible() }
     }
 
     func refresh() async {
-        guard !isLoading else { return }
-        isLoading = true; defer { isLoading = false }
+        guard !isLoading else { pendingRefresh = true; return }
+        isLoading = true
+        defer {
+            isLoading = false
+            // El usuario movió el mapa mientras se cargaba: pedir de inmediato la zona nueva
+            if pendingRefresh { pendingRefresh = false; Task { await refresh() } }
+        }
         do {
             var list: [Aircraft]
             switch mode {
@@ -387,6 +396,7 @@ final class RadarStore {
         trails = trails.filter { next[$0.key] != nil }
         aircraft = next
         tick = now
+        recomputeVisible()
     }
 
     private func checkEmergencies() {
@@ -432,7 +442,7 @@ final class RadarStore {
     // MARK: Selección
 
     func select(_ a: Aircraft?) {
-        if let a, aircraft[a.hex] == nil { aircraft[a.hex] = a }
+        if let a, aircraft[a.hex] == nil { aircraft[a.hex] = a; recomputeVisible() }
         selectedHex = a?.hex
         if a == nil { follow = false; cockpit = false }
     }
@@ -466,5 +476,7 @@ final class RadarStore {
         return selectedTrace + live.filter { $0.time > lastTrace }
     }
 
-    func focus(on c: CLLocationCoordinate2D) { center = c }
+    func focus(on c: CLLocationCoordinate2D, span d: Double = 1.2) {
+        cameraRequest = CameraRequest(region: MKCoordinateRegion(center: c, span: .init(latitudeDelta: d, longitudeDelta: d)))
+    }
 }
