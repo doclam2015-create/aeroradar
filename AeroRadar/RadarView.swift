@@ -24,12 +24,13 @@ struct RadarView: View {
                 if let e = radar.errorText { pill(e, icon: "wifi.exclamationmark", color: .red) }
                 emergencyBanner
                 Spacer()
-                if let a = radar.selected, !showDetail || hsize != .compact {
+                if let a = radar.selected, !radar.cockpit, !showDetail || hsize != .compact {
                     if hsize == .compact {
                         CompactCard(aircraft: a) { showDetail = true }
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
                 }
+                if radar.cockpit, let a = radar.selected { cockpitHUD(a) }
                 legend
             }
             .padding(.horizontal, 12)
@@ -44,9 +45,12 @@ struct RadarView: View {
                     .inspectorColumnWidth(min: 340, ideal: 380, max: 460)
             }
         }
-        .sheet(isPresented: $showSearch) { SearchView { a, coord in
+        .sheet(isPresented: $showSearch) { SearchView { a, region in
             showSearch = false
-            if let coord { fly(to: coord, distance: 400_000) }
+            if let region {
+                radar.follow = false; radar.cockpit = false
+                withAnimation(.easeInOut(duration: 1.2)) { position = .region(region) }
+            }
             if let a { radar.select(a); showDetail = true; fly(to: a.coordinate, distance: 300_000) }
         } }
         .sheet(isPresented: $showFilters) { FiltersView() }
@@ -55,6 +59,15 @@ struct RadarView: View {
         } }
         .onChange(of: radar.selectedHex) { _, h in if h != nil && hsize != .compact { showDetail = true } }
         .onChange(of: radar.tick) { _, _ in followIfNeeded() }
+        .onChange(of: radar.cockpit) { _, on in
+            if on {
+                if hsize == .compact { showDetail = false }
+                followIfNeeded(animated: true)
+            } else if let a = radar.selected {
+                fly(to: radar.position(of: a), distance: 250_000)
+            }
+        }
+        .onChange(of: radar.follow) { _, on in if on { followIfNeeded(animated: true) } }
         .onAppear {
             guard !didSetInitial else { return }
             didSetInitial = true
@@ -66,7 +79,10 @@ struct RadarView: View {
     // MARK: Mapa
 
     private var map: some View {
-        Map(position: $position) {
+        let vis = radar.visible
+        let iconScale: CGFloat = radar.span.latitudeDelta > 40 ? 0.5 : radar.span.latitudeDelta > 15 ? 0.65 : radar.span.latitudeDelta > 6 ? 0.8 : 1
+        let labelsOn = prefs.showLabels && (radar.span.latitudeDelta < 0.8 || (radar.span.latitudeDelta < 3 && vis.count < 60))
+        return Map(position: $position) {
             if prefs.showTerminator {
                 ForEach(Array(Terminator.nightPolygons(at: radar.tick).enumerated()), id: \.offset) { _, poly in
                     MapPolygon(coordinates: poly).foregroundStyle(.black.opacity(0.28))
@@ -84,12 +100,18 @@ struct RadarView: View {
                 }
             }
             if prefs.showTrails && radar.span.latitudeDelta < 5 {
-                ForEach(radar.visible.filter { $0.hex != radar.selectedHex }) { a in
+                ForEach(vis.filter { $0.hex != radar.selectedHex }) { a in
                     if let t = radar.trails[a.hex], t.count > 1 {
                         MapPolyline(coordinates: t.map(\.coordinate) + [radar.position(of: a)])
                             .stroke(altitudeColor(a.altitude, onGround: a.onGround).opacity(0.45), lineWidth: 1.5)
                     }
                 }
+            }
+            if let h = radar.hovered, h.hex != radar.selectedHex {
+                Annotation("", coordinate: radar.position(of: h), anchor: .bottom) {
+                    HoverCard(aircraft: h).environment(prefs).padding(.bottom, 26).allowsHitTesting(false)
+                }
+                .annotationTitles(.hidden)
             }
             if let a = radar.selected {
                 let trail = radar.fullTrail(for: a.hex)
@@ -105,18 +127,19 @@ struct RadarView: View {
                     Annotation(r.destination.code, coordinate: r.destination.coordinate) { routeDot(.orange) }
                 }
             }
-            ForEach(radar.visible) { a in
+            ForEach(vis) { a in
                 Annotation(a.displayName, coordinate: radar.position(of: a), anchor: .center) {
-                    PlaneMarker(aircraft: a, selected: a.hex == radar.selectedHex, mapHeading: radar.mapHeading,
-                                showLabel: a.hex == radar.selectedHex || (prefs.showLabels && (radar.span.latitudeDelta < 0.8 || (radar.span.latitudeDelta < 3 && radar.visible.count < 60))),
+                    PlaneMarker(aircraft: a, selected: a.hex == radar.selectedHex, mapHeading: radar.mapHeading, scale: iconScale,
+                                showLabel: a.hex == radar.selectedHex || labelsOn,
                                 watched: radar.isWatched(a))
                         .onTapGesture { radar.select(a) ; if hsize == .compact { showDetail = false } }
+                        .onHover { radar.hover(a.hex, $0) }
                 }
                 .annotationTitles(.hidden)
             }
             UserAnnotation()
         }
-        .mapStyle(prefs.mapStyle)
+        .mapStyle(radar.cockpit ? .hybrid(elevation: .realistic, pointsOfInterest: .excludingAll) : prefs.mapStyle)
         .safeAreaPadding(.top, 64)
         .mapControls {
             MapCompass()
@@ -143,15 +166,19 @@ struct RadarView: View {
         }
     }
 
-    private func followIfNeeded() {
+    private func followIfNeeded(animated: Bool = false) {
         guard radar.follow, let a = radar.selected else { return }
         let c = radar.position(of: a)
+        let cam: MapCamera
         if radar.cockpit {
-            position = .camera(MapCamera(centerCoordinate: Geo.destination(from: c, bearing: a.track ?? 0, km: 3),
-                                         distance: 9000, heading: a.track ?? 0, pitch: 72))
+            // Cámara detrás del avión, mirando en su rumbo, con relieve 3D (más alto el avión → más lejos la cámara)
+            let altM = Double(a.altitude ?? 3000) * 0.3048
+            cam = MapCamera(centerCoordinate: c, distance: min(max(altM * 2.2, 3000), 40_000), heading: a.track ?? 0, pitch: 70)
         } else {
-            position = .camera(MapCamera(centerCoordinate: c, distance: min(cameraDistance, 1_500_000)))
+            cam = MapCamera(centerCoordinate: c, distance: min(cameraDistance, 1_500_000))
         }
+        if animated { withAnimation(.easeInOut(duration: 1.5)) { position = .camera(cam) } }
+        else { position = .camera(cam) }
     }
 
     // MARK: Barras
@@ -212,7 +239,7 @@ struct RadarView: View {
         HStack(spacing: 6) {
             Circle().fill(radar.errorText == nil ? .green : .red).frame(width: 7, height: 7)
                 .opacity(radar.isLoading ? 0.3 : 1)
-            Text("\(radar.visible.count) aeronaves")
+            Text(radar.visible.count == 1 ? "1 aeronave" : "\(radar.visible.count) aeronaves")
             if radar.mode != .area { Text("· \(radar.mode.label)") }
             if radar.filters.isActive { Text("· filtrado") }
         }
@@ -229,6 +256,23 @@ struct RadarView: View {
                      icon: "exclamationmark.triangle.fill", color: .red)
             }.buttonStyle(.plain)
         }
+    }
+
+    private func cockpitHUD(_ a: Aircraft) -> some View {
+        HStack(spacing: 16) {
+            Image(systemName: "cube.transparent").foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Vista 3D · \(a.displayName)").font(.headline)
+                Text("\(prefs.altitude(a.altitude, ground: a.onGround)) · \(prefs.speed(a.groundSpeed)) · \(Int(a.track ?? 0))° \(Geo.compass(a.track ?? 0))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Salir") { radar.cockpit = false; radar.follow = false }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .frame(maxWidth: 520)
     }
 
     private var legend: some View {
@@ -269,6 +313,7 @@ struct PlaneMarker: View {
     let aircraft: Aircraft
     let selected: Bool
     let mapHeading: Double
+    var scale: CGFloat = 1
     let showLabel: Bool
     let watched: Bool
     @State private var pulse = false
@@ -285,7 +330,7 @@ struct PlaneMarker: View {
                     .onAppear { withAnimation(.easeInOut(duration: 1).repeatForever(autoreverses: true)) { pulse = true } }
             }
             Image(systemName: aircraft.isHelicopter ? "fanblades.fill" : "airplane")
-                .font(.system(size: aircraft.sizeClass * (selected ? 1.3 : 1), weight: .bold))
+                .font(.system(size: aircraft.sizeClass * (selected ? 1.3 : scale), weight: .bold))
                 .foregroundStyle(selected ? .white : color)
                 .shadow(color: .black.opacity(0.65), radius: 1.5, x: 0, y: 1)
                 .rotationEffect(.degrees((aircraft.track ?? 0) - mapHeading - (aircraft.isHelicopter ? 0 : 90)))

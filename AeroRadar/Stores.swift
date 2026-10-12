@@ -194,6 +194,19 @@ final class RadarStore {
     var selectedTrace: [TrailPoint] = []
     var follow = false
     var cockpit = false
+    var hoverHex: String?
+    private var hoverClear: Task<Void, Never>?
+
+    func hover(_ hex: String, _ inside: Bool) {
+        hoverClear?.cancel()
+        if inside { hoverHex = hex; return }
+        hoverClear = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, self?.hoverHex == hex else { return }
+            self?.hoverHex = nil
+        }
+    }
+    var hovered: Aircraft? { hoverHex.flatMap { aircraft[$0] } }
 
     // Estadísticas de la sesión
     var seen: Set<String> = []
@@ -229,6 +242,27 @@ final class RadarStore {
     var visible: [Aircraft] {
         let list = aircraft.values.filter { filters.matches($0) }
         guard list.count > prefs.maxAircraft else { return list }
+        if span.latitudeDelta > 20 {
+            // Vista continental o mundial: muestra una selección repartida en todo el mapa
+            // Reparto geográfico: cuadrícula de 12×12 y se toma un avión de cada celda por turno
+            let la0 = center.latitude - span.latitudeDelta / 2, lo0 = center.longitude - span.longitudeDelta / 2
+            var cells: [Int: [Aircraft]] = [:]
+            for a in list {
+                let r = min(11, max(0, Int((a.lat - la0) / span.latitudeDelta * 12)))
+                let c = min(11, max(0, Int((a.lon - lo0) / span.longitudeDelta * 12)))
+                cells[r * 12 + c, default: []].append(a)
+            }
+            var queues = cells.values.map { $0.sorted { $0.hex < $1.hex } }
+            var out: [Aircraft] = []
+            var i = 0
+            while out.count < prefs.maxAircraft && !queues.isEmpty {
+                queues = queues.filter { i < $0.count }
+                for q in queues where out.count < prefs.maxAircraft { out.append(q[i]) }
+                i += 1
+            }
+            if let s = selected, !out.contains(where: { $0.hex == s.hex }) { out.append(s) }
+            return out
+        }
         return Array(list.sorted { Geo.distanceKm($0.coordinate, center) < Geo.distanceKm($1.coordinate, center) }.prefix(prefs.maxAircraft))
     }
 
@@ -247,14 +281,16 @@ final class RadarStore {
         loop = Task { [weak self] in
             while !Task.isCancelled {
                 await self?.refresh()
-                let s = self?.prefs.refresh ?? 6
+                var s = self?.prefs.refresh ?? 6
+                if let d = self?.span.latitudeDelta, d > 30 { s = max(s, 20) }   // mundo/continente: menos datos
                 try? await Task.sleep(for: .seconds(s))
             }
         }
         ticker = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
-                guard let self, self.prefs.smoothMotion else { continue }
+                // En vistas continentales el movimiento es imperceptible: no se anima (ahorra batería)
+                guard let self, self.prefs.smoothMotion, self.span.latitudeDelta < 15 || self.follow else { continue }
                 withAnimation(.linear(duration: 1)) { self.tick = .now }
             }
         }
@@ -275,7 +311,7 @@ final class RadarStore {
         do {
             var list: [Aircraft]
             switch mode {
-            case .area: list = try await API.aircraft(center: center, radiusNM: radiusNM * 1.15)
+            case .area: list = try await areaAircraft()
             case .military: list = try await API.military()
             case .emergencies: list = try await API.emergencies()
             case .watchlist: list = await watchSearch()
@@ -297,13 +333,43 @@ final class RadarStore {
         if prefs.emergencyAlerts { checkEmergencies() }
     }
 
+    // MARK: Fuentes por zona
+
+    private var openSkyCache: [Aircraft] = []
+    private var openSkyAt = Date.distantPast
+    private var openSkyBlockedUntil = Date.distantPast
+
+    private var box: (s: Double, n: Double, w: Double, e: Double) {
+        let la = span.latitudeDelta / 2 * 1.1, lo = span.longitudeDelta / 2 * 1.1
+        return (center.latitude - la, center.latitude + la, center.longitude - lo, center.longitude + lo)
+    }
+
+    private func areaAircraft() async throws -> [Aircraft] {
+        let b = box
+        var list: [Aircraft]
+        do {
+            list = try await API.aircraft(south: b.s, north: b.n, west: b.w, east: b.e)
+        } catch {
+            list = try await API.aircraft(center: center, radiusNM: radiusNM * 1.15)
+        }
+        // OpenSky suma receptores propios: útil donde la red comunitaria ve poco (p. ej. Chile).
+        let area = (b.n - b.s) * (b.e - b.w)
+        if list.count < 150, area < 2500, Date() > openSkyBlockedUntil, Date().timeIntervalSince(openSkyAt) > 30 {
+            openSkyAt = .now
+            do { openSkyCache = try await API.openSky(south: b.s, north: b.n, west: b.w, east: b.e) }
+            catch { openSkyBlockedUntil = Date().addingTimeInterval(600); openSkyCache = [] }
+        }
+        let known = Set(list.map(\.hex))
+        list += openSkyCache.filter { !known.contains($0.hex) && $0.lat > b.s && $0.lat < b.n && $0.lon > b.w && $0.lon < b.e }
+        return list
+    }
+
     private func merge(_ list: [Aircraft]) {
         let now = Date()
         var next: [String: Aircraft] = [:]
-        for var a in list {
-            a.fetchedAt = now
+        for a in list {
             next[a.hex] = a
-            if prefs.showTrails || a.hex == selectedHex {
+            if (prefs.showTrails && span.latitudeDelta < 8) || a.hex == selectedHex {
                 var t = trails[a.hex] ?? []
                 if t.last.map({ $0.lat != a.lat || $0.lon != a.lon }) ?? true {
                     t.append(TrailPoint(lat: a.lat, lon: a.lon, alt: a.altitude, gs: a.groundSpeed, time: now))

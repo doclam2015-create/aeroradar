@@ -10,6 +10,7 @@ struct AircraftDetailView: View {
     let aircraft: Aircraft
     let close: () -> Void
     @State private var addedToMyFlights = false
+    @State private var modelImage: URL?
 
     private var a: Aircraft { aircraft }
     private var route: FlightRoute? { radar.selectedRoute }
@@ -30,12 +31,17 @@ struct AircraftDetailView: View {
                 liveGrid
                 profileChart
                 aircraftCard
+                ModelSection(aircraft: a)
                 Text("Datos: adsb.lol (ADS-B comunitario), adsbdb.com, aviationweather.gov. Actualizado \(radar.lastUpdate?.formatted(date: .omitted, time: .standard) ?? "—").")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             .padding()
         }
         .sensoryFeedback(.selection, trigger: a.hex)
+        .task(id: a.hex) {
+            modelImage = nil
+            modelImage = await ModelInfoLoader.load(for: aircraft).1?.image
+        }
     }
 
     // MARK: Encabezado con foto
@@ -43,7 +49,7 @@ struct AircraftDetailView: View {
     private var header: some View {
         ZStack(alignment: .bottomLeading) {
             Group {
-                if let url = info?.photoURL {
+                if let url = info?.photoURL ?? modelImage {
                     AsyncImage(url: url) { img in img.resizable().scaledToFill() } placeholder: { photoPlaceholder.overlay(ProgressView()) }
                 } else {
                     photoPlaceholder
@@ -235,7 +241,7 @@ struct AircraftDetailView: View {
     private var aircraftCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Aeronave").font(.headline)
-            row("Modelo", info.flatMap { i in [i.manufacturer, i.type].compactMap { $0 }.joined(separator: " ").nilIfEmpty } ?? a.typeDesc ?? a.typeCode)
+            row("Modelo", TypeDB.spec(for: a.typeCode)?.name ?? info.flatMap { i in [i.manufacturer, i.type].compactMap { $0 }.joined(separator: " ").nilIfEmpty } ?? a.typeDesc ?? a.typeCode)
             row("Código tipo", a.typeCode)
             row("Matrícula", a.registration ?? info?.registration)
             row("Operador", a.owner ?? info?.owner)
@@ -255,6 +261,7 @@ struct AircraftDetailView: View {
         case let s where s.hasPrefix("tisb"): return "TIS-B"
         case "adsr_icao": return "ADS-R"
         case "mode_s": return "Modo S"
+        case "opensky": return "OpenSky Network"
         default: return a.source ?? "—"
         }
     }

@@ -78,6 +78,25 @@ struct Aircraft: Identifiable, Hashable, Decodable {
         source = try? c.decode(String.self, forKey: .type)
     }
 
+    /// Vector de estado de OpenSky: [icao24, callsign, país, tPos, tUlt, lon, lat, altBaro(m), enTierra, vel(m/s), rumbo, vVert(m/s), …, altGeo, squawk]
+    init?(openSky s: [Any]) {
+        guard s.count > 14, let h = s[0] as? String, let lon = s[5] as? Double, let lat = s[6] as? Double else { return nil }
+        hex = h.lowercased()
+        self.lat = lat; self.lon = lon
+        callsign = (s[1] as? String)?.trimmingCharacters(in: .whitespaces).nilIfEmpty
+        onGround = s[8] as? Bool ?? false
+        altitude = onGround ? 0 : (s[7] as? Double).map { Int($0 / 0.3048) }
+        geomAltitude = (s[13] as? Double).map { Int($0 / 0.3048) }
+        groundSpeed = (s[9] as? Double).map { $0 * 1.943844 }
+        track = s[10] as? Double
+        verticalRate = (s[11] as? Double).map { Int($0 * 196.85) }
+        squawk = s[14] as? String
+        military = false
+        let last = (s[3] as? Double) ?? (s[4] as? Double) ?? Date().timeIntervalSince1970
+        seenPos = max(0, Date().timeIntervalSince1970 - last)
+        source = "opensky"
+    }
+
     var coordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lon) }
     var displayName: String { callsign ?? registration ?? hex.uppercased() }
     var airlineICAO: String? {

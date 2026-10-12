@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import MapKit
 
 // MARK: - Búsqueda
 
@@ -7,7 +8,8 @@ struct SearchView: View {
     @Environment(RadarStore.self) private var radar
     @Environment(Prefs.self) private var prefs
     @Environment(\.dismiss) private var dismiss
-    let pick: (Aircraft?, CLLocationCoordinate2D?) -> Void
+    let pick: (Aircraft?, MKCoordinateRegion?) -> Void
+    @State private var places: [MKMapItem] = []
     @State private var text = ""
     @State private var remote: [Aircraft] = []
     @State private var searching = false
@@ -26,7 +28,7 @@ struct SearchView: View {
             List {
                 if text.count < 2 {
                     Section {
-                        Label("Busca por número de vuelo (LA800, LAN800), matrícula (CC-BGA), código hex o aeropuerto (SCL, Santiago).", systemImage: "info.circle")
+                        Label("Busca un vuelo (LA800), matrícula (CC-BGA), aeropuerto (SCL) o lugar: país, ciudad, continente o «todo el mundo».", systemImage: "info.circle")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     if !radar.watchlist.isEmpty {
@@ -34,6 +36,29 @@ struct SearchView: View {
                             ForEach(radar.watchlist) { w in
                                 Button { text = w.query; Task { await searchRemote() } } label: { Label(w.query, systemImage: "star.fill") }
                             }
+                        }
+                    }
+                }
+                let regions = NamedRegion.matching(text)
+                if !regions.isEmpty || !places.isEmpty {
+                    Section("Lugares") {
+                        ForEach(regions) { r in
+                            Button { pick(nil, MKCoordinateRegion(center: .init(latitude: r.lat, longitude: r.lon),
+                                                                  span: .init(latitudeDelta: r.latSpan, longitudeDelta: r.lonSpan))) } label: {
+                                Label(r.name, systemImage: r.name == "Todo el mundo" ? "globe" : "globe.americas.fill")
+                                    .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
+                        }
+                        ForEach(places, id: \.self) { item in
+                            Button { pick(nil, region(for: item)) } label: {
+                                Label {
+                                    VStack(alignment: .leading) {
+                                        Text(item.name ?? "")
+                                        Text(subtitle(item)).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                } icon: { Image(systemName: "mappin.circle.fill").foregroundStyle(.red) }
+                                .frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                            }.buttonStyle(.plain)
                         }
                     }
                 }
@@ -54,25 +79,44 @@ struct SearchView: View {
                 if !aps.isEmpty {
                     Section("Aeropuertos") {
                         ForEach(aps.prefix(15)) { ap in
-                            Button { pick(nil, ap.coordinate) } label: {
+                            Button { pick(nil, MKCoordinateRegion(center: ap.coordinate, span: .init(latitudeDelta: 0.8, longitudeDelta: 0.8))) } label: {
                                 HStack {
                                     Text(ap.iata).font(.headline.monospaced()).frame(width: 48, alignment: .leading)
                                     VStack(alignment: .leading) {
                                         Text(ap.name).lineLimit(1)
                                         Text("\(ap.city) \(ap.flag)").font(.caption).foregroundStyle(.secondary)
                                     }
+                                    Spacer(minLength: 0)
                                 }
+                                .contentShape(Rectangle())
                             }.buttonStyle(.plain)
                         }
                     }
                 }
             }
-            .searchable(text: $text, prompt: "Vuelo, matrícula, aeropuerto")
+            .searchable(text: $text, prompt: "Vuelo, matrícula, aeropuerto o lugar")
             .searchFocused($focused)
             .onAppear { focused = true }
             .onSubmit(of: .search) { Task { await searchRemote() } }
             .task(id: text) {
                 remote = []
+                places = []
+                if text.count >= 2 {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    guard !Task.isCancelled else { return }
+                    let req = MKLocalSearch.Request()
+                    req.naturalLanguageQuery = text
+                    req.resultTypes = .address
+                    req.region = MKCoordinateRegion(center: .init(latitude: 0, longitude: 0), span: .init(latitudeDelta: 170, longitudeDelta: 360))
+                    var items = (try? await MKLocalSearch(request: req).start())?.mapItems ?? []
+                    if items.isEmpty {
+                        let marks = (try? await CLGeocoder().geocodeAddressString(text)) ?? []
+                        items = marks.map { MKMapItem(placemark: MKPlacemark(placemark: $0)) }
+                        for (i, m) in marks.enumerated() { items[i].name = m.name ?? m.locality ?? m.country }
+                    }
+                    guard !Task.isCancelled else { return }
+                    places = Array(items.prefix(6))
+                }
                 guard text.count >= 3 else { return }
                 try? await Task.sleep(for: .milliseconds(600))
                 guard !Task.isCancelled else { return }
@@ -82,6 +126,18 @@ struct SearchView: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cerrar") { dismiss() } } }
         }
         .macSheetSize(420, 520)
+    }
+
+    private func region(for item: MKMapItem) -> MKCoordinateRegion {
+        let c = item.placemark.coordinate
+        let radius = (item.placemark.region as? CLCircularRegion)?.radius ?? 20_000
+        let deg = min(max(radius * 2.4 / 111_000, 0.4), 120)
+        return MKCoordinateRegion(center: c, span: .init(latitudeDelta: deg, longitudeDelta: deg))
+    }
+
+    private func subtitle(_ item: MKMapItem) -> String {
+        let p = item.placemark
+        return [p.locality, p.administrativeArea, p.country].compactMap { $0 }.filter { $0 != item.name }.joined(separator: ", ")
     }
 
     private func searchRemote() async {
@@ -104,6 +160,7 @@ struct SearchView: View {
                 Spacer()
                 Text(prefs.altitude(a.altitude, ground: a.onGround)).font(.caption.monospacedDigit())
             }
+            .contentShape(Rectangle())
         }.buttonStyle(.plain)
     }
 }
