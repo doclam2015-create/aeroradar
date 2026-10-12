@@ -142,7 +142,7 @@ struct Aircraft: Identifiable, Hashable, Decodable {
     /// Posición estimada por navegación a estima (para movimiento fluido entre actualizaciones).
     func estimatedPosition(at date: Date) -> CLLocationCoordinate2D {
         guard !onGround, let gs = groundSpeed, gs > 30, let trk = track else { return coordinate }
-        let dt = min(date.timeIntervalSince(fetchedAt) + seenPos, 60)
+        let dt = min(date.timeIntervalSince(fetchedAt) + seenPos, 180)
         guard dt > 0 else { return coordinate }
         let distKm = gs * 1.852 * dt / 3600
         return Geo.destination(from: coordinate, bearing: trk, km: distKm)

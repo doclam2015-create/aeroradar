@@ -22,6 +22,8 @@ struct AeroRadarApp: App {
                 .environment(location)
                 .tint(.orange)
                 .task {
+                    let r = radar
+                    myFlights.localLookup = { cs in r.aircraft.values.first { $0.callsign?.uppercased() == cs.uppercased() } }
                     radar.start()
                     myFlights.start()
                     location.request()

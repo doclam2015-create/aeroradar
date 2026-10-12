@@ -392,9 +392,23 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
 
     // MARK: Sincronización (solo trabaja si algo cambió)
 
+    private var lastPrefsKey = ""
+
     func sync() {
         guard let map else { return }
         applyLook()
+        // Cambios en Ajustes o en el menú de capas: redibujar sin esperar la próxima descarga
+        let pk = "\(prefs.showLabels)\(prefs.showAirports)\(prefs.showTrails)\(prefs.showTerminator)\(prefs.maxAircraft)"
+        if pk != lastPrefsKey {
+            let first = lastPrefsKey.isEmpty
+            lastPrefsKey = pk
+            if !first {
+                radar.recomputeVisible()
+                for ann in planes.values where map.view(for: ann) != nil { refreshView(ann) }
+                syncAirports(on: map)
+                syncTrails(on: map, force: true)
+            }
+        }
         if let req = radar.cameraRequest, req.id != lastCamera {
             lastCamera = req.id
             apply(req, on: map)

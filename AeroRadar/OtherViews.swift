@@ -325,9 +325,12 @@ struct SettingsView: View {
                         .onChange(of: prefs.emergencyAlerts) { _, v in if v { Notifier.requestAuth() } }
                     NavigationLink("Lista de vigilancia (\(radar.watchlist.count))") { WatchlistView() }
                 }
+                OpenSkySection()
                 Section("Fuentes de datos (gratuitas)") {
                     Link("adsb.lol — posiciones ADS-B en vivo (ODbL)", destination: URL(string: "https://adsb.lol")!)
                     Link("adsb.fi — red ADS-B de respaldo", destination: URL(string: "https://adsb.fi")!)
+                    Link("OpenSky Network — receptores propios (mejor cobertura en Sudamérica)", destination: URL(string: "https://opensky-network.org")!)
+                    Link("Wikipedia — fotos y descripción de modelos", destination: URL(string: "https://es.wikipedia.org")!)
                     Link("adsbdb.com — rutas y fichas de aeronaves", destination: URL(string: "https://www.adsbdb.com")!)
                     Link("aviationweather.gov — METAR y TAF", destination: URL(string: "https://aviationweather.gov")!)
                     Link("OurAirports — base de aeropuertos", destination: URL(string: "https://ourairports.com")!)
@@ -382,5 +385,48 @@ struct WatchlistView: View {
         Notifier.requestAuth()
         radar.watchlist.append(WatchItem(query: q))
         newItem = ""
+    }
+}
+
+
+// MARK: - OpenSky (cupo y cuenta gratuita)
+
+struct OpenSkySection: View {
+    @Environment(RadarStore.self) private var radar
+    @State private var os = OpenSkyClient.shared
+    @State private var id = ""
+    @State private var secret = ""
+    @State private var editing = false
+
+    var body: some View {
+        Section {
+            LabeledContent("Aviones ADS-B comunitario", value: "\(radar.adsbCount)")
+            LabeledContent("Aviones extra de OpenSky", value: "\(radar.openSkyExtra)")
+            LabeledContent("Cupo OpenSky hoy", value: "\(os.usedToday) de \(os.dailyBudget) créditos")
+            if let e = os.lastError { Label(e, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption) }
+            if os.hasAccount && !editing {
+                LabeledContent("Cuenta", value: os.clientID)
+                Button("Quitar cuenta", role: .destructive) { os.clearCredentials() }
+            } else if editing {
+                TextField("Client ID", text: $id)
+                    .autocorrectionDisabled()
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                SecureField("Client secret", text: $secret)
+                HStack {
+                    Button("Cancelar") { editing = false; id = ""; secret = "" }
+                    Spacer()
+                    Button("Guardar") { os.setCredentials(id: id, secret: secret); editing = false; id = ""; secret = "" }
+                        .disabled(id.isEmpty || secret.isEmpty)
+                }
+            } else {
+                Button("Conectar cuenta gratuita de OpenSky") { editing = true }
+            }
+        } header: {
+            Text("OpenSky Network")
+        } footer: {
+            Text("Sin cuenta: 400 créditos al día (la app los reparte para que duren). Con una cuenta gratuita: 4.000 créditos y además la trayectoria de los aviones que solo ve OpenSky. Para obtenerla: crea una cuenta en opensky-network.org → Account → API Client → descarga credentials.json y copia aquí el client ID y el secret. Se guardan en el llavero del dispositivo.")
+        }
     }
 }

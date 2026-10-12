@@ -359,8 +359,10 @@ final class RadarStore {
     // MARK: Fuentes por zona
 
     private var openSkyCache: [Aircraft] = []
-    private var openSkyAt = Date.distantPast
-    private var openSkyBlockedUntil = Date.distantPast
+    /// Aviones aportados por cada fuente en la última actualización
+    private(set) var adsbCount = 0
+    private(set) var openSkyExtra = 0
+    private var openSkyBox: (s: Double, n: Double, w: Double, e: Double)?
 
     private var box: (s: Double, n: Double, w: Double, e: Double) {
         let la = span.latitudeDelta / 2 * 1.1, lo = span.longitudeDelta / 2 * 1.1
@@ -369,21 +371,34 @@ final class RadarStore {
 
     private func areaAircraft() async throws -> [Aircraft] {
         let b = box
-        var list: [Aircraft]
+        var list: [Aircraft] = []
+        var adsbFailed = false
         do {
             list = try await API.aircraft(south: b.s, north: b.n, west: b.w, east: b.e)
         } catch {
-            list = try await API.aircraft(center: center, radiusNM: radiusNM * 1.15)
+            do { list = try await API.aircraft(center: center, radiusNM: radiusNM * 1.15) }
+            catch { adsbFailed = true }   // seguimos: OpenSky puede cubrir la zona
         }
-        // OpenSky suma receptores propios: útil donde la red comunitaria ve poco (p. ej. Chile).
-        let area = (b.n - b.s) * (b.e - b.w)
-        if list.count < 150, area < 2500, Date() > openSkyBlockedUntil, Date().timeIntervalSince(openSkyAt) > 30 {
-            openSkyAt = .now
-            do { openSkyCache = try await API.openSky(south: b.s, north: b.n, west: b.w, east: b.e) }
-            catch { openSkyBlockedUntil = Date().addingTimeInterval(600); openSkyCache = [] }
+        adsbCount = list.count
+        // OpenSky suma receptores propios: en Sudamérica ve más del doble que las redes comunitarias.
+        let os = OpenSkyClient.shared
+        let cost = OpenSkyClient.cost(areaSqDeg: (b.n - b.s) * (b.e - b.w))
+        let c = openSkyBox
+        let newArea = c == nil || !(center.latitude > c!.s && center.latitude < c!.n && center.longitude > c!.w && center.longitude < c!.e)
+            || (b.n - b.s) > (c!.n - c!.s) * 1.8
+        if span.latitudeDelta < 70, os.canQuery(cost: cost, newArea: newArea) {
+            if let fresh = try? await os.states(south: b.s, north: b.n, west: b.w, east: b.e) {
+                openSkyCache = fresh
+                openSkyBox = b
+            }
         }
+        // Posiciones de OpenSky de más de 3 minutos ya no son confiables
+        openSkyCache.removeAll { Date().timeIntervalSince($0.fetchedAt) > 180 }
         let known = Set(list.map(\.hex))
-        list += openSkyCache.filter { !known.contains($0.hex) && $0.lat > b.s && $0.lat < b.n && $0.lon > b.w && $0.lon < b.e }
+        let extra = openSkyCache.filter { !known.contains($0.hex) && $0.lat > b.s && $0.lat < b.n && $0.lon > b.w && $0.lon < b.e }
+        openSkyExtra = extra.count
+        list += extra
+        if adsbFailed && list.isEmpty { throw URLError(.cannotConnectToHost) }
         return list
     }
 
@@ -471,8 +486,13 @@ final class RadarStore {
             let route: FlightRoute? = if let cs { await API.route(callsign: cs) } else { nil }
             let (i, t) = await (info, trace)
             guard selectedHex == h else { return }
-            selectedInfo = i; selectedTrace = t
+            selectedInfo = i
             selectedRoute = Self.plausible(route, for: aircraft[h])
+            selectedTrace = t
+            if t.isEmpty {
+                let os = await OpenSkyClient.shared.track(hex: h)
+                if selectedHex == h { selectedTrace = os }
+            }
         }
     }
 

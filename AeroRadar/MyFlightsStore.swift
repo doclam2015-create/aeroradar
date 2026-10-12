@@ -91,6 +91,8 @@ struct MyFlight: Identifiable, Codable, Hashable {
 final class MyFlightsStore {
     var flights: [MyFlight] = [] { didSet { save() } }
     var isRefreshing = false
+    /// Búsqueda en los aviones que ya muestra el radar (incluye OpenSky, que no permite buscar por indicativo)
+    var localLookup: ((String) -> Aircraft?)?
     private var loop: Task<Void, Never>?
     private let url: URL = {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("AeroRadar", isDirectory: true)
@@ -139,7 +141,8 @@ final class MyFlightsStore {
     private func track(_ id: UUID) async {
         guard var f = flights.first(where: { $0.id == id }) else { return }
         let cs = f.callsignICAO ?? f.number
-        let found = (try? await API.byCallsign(cs)) ?? []
+        var found = (try? await API.byCallsign(cs)) ?? []
+        if found.isEmpty, let local = localLookup?(cs) { found = [local] }
         // Si hay varias con el mismo indicativo, la más cercana a la ruta
         let a = found.min { x, y in
             guard let o = f.origin else { return false }
