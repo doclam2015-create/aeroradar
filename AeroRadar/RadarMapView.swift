@@ -166,10 +166,8 @@ final class PlaneView: MKAnnotationView {
             plane.bounds = CGRect(x: 0, y: 0, width: w, height: h)
         }
         plane.position = CGPoint(x: 20, y: 20)
-        var deg = (a.track ?? 0) - mapHeading - (a.isHelicopter ? 0 : 90)
-        #if os(macOS)
-        deg = -deg
-        #endif
+        // Las vistas de anotación usan eje Y hacia abajo también en macOS: el giro es horario en ambas plataformas
+        let deg = (a.track ?? 0) - mapHeading - (a.isHelicopter ? 0 : 90)
         plane.setAffineTransform(CGAffineTransform(rotationAngle: deg * .pi / 180))
 
         let showRing = selected || a.isEmergency
@@ -326,6 +324,9 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
     private var airports: [String: AirportAnnotation] = [:]
     private var routeEnds: [RouteEndAnnotation] = []
     private var selectedTrail: MKPolyline?
+    /// Tramo entre el último punto reportado y la posición estimada del ícono (evita el hueco)
+    private var connector: MKPolyline?
+    private var connectorColor: PColor = .white
     private var selectedTrailColors: [PColor] = []
     private var routeLine: MKPolyline?
     private var otherTrails: MKMultiPolyline?
@@ -516,6 +517,8 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
         guard let map, !interacting else { return }
         if radar.follow { followCamera(animated: true) }
         guard prefs.smoothMotion, radar.span.latitudeDelta < 15 || radar.follow else { return }
+        updateConnector(on: map)
+        if otherTrails != nil { syncTrails(on: map, force: true) }
         let now = Date()
         let rect = map.visibleMapRect
         for ann in planes.values {
@@ -554,9 +557,24 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
 
     // MARK: Capas (trayectorias, ruta, noche)
 
+    /// Une la trayectoria con el ícono, que avanza por estima entre actualizaciones.
+    /// Usa la posición donde el ícono está ahora (antes de la próxima animación), así la línea nunca se adelanta al avión.
+    private func updateConnector(on map: MKMapView) {
+        if let c = connector { map.removeOverlay(c); connector = nil }
+        guard selectedTrail != nil, let a = radar.selected, let ann = planes[a.hex] else { return }
+        let from = a.coordinate, to = ann.coordinate
+        guard abs(from.latitude - to.latitude) + abs(from.longitude - to.longitude) > 1e-6 else { return }
+        var coords = [from, to]
+        let line = MKPolyline(coordinates: &coords, count: 2)
+        connectorColor = PlaneImages.color(for: a).0
+        connector = line
+        map.addOverlay(line, level: .aboveRoads)
+    }
+
     private func syncSelectionOverlays(on map: MKMapView) {
         guard let a = radar.selected else {
             if let t = selectedTrail { map.removeOverlay(t); selectedTrail = nil; lastTrailCount = -1 }
+            if let c = connector { map.removeOverlay(c); connector = nil }
             if let r = routeLine { map.removeOverlay(r); routeLine = nil }
             if !routeEnds.isEmpty { map.removeAnnotations(routeEnds); routeEnds = [] }
             lastRouteKey = ""
@@ -578,6 +596,7 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
                 map.addOverlay(t, level: .aboveRoads)
             }
         }
+        updateConnector(on: map)
         let routeKey = "\(a.hex)-\(radar.selectedRoute?.destination.icao ?? "")-\(Int(a.lat * 20))-\(Int(a.lon * 20))"
         if routeKey != lastRouteKey {
             lastRouteKey = routeKey
@@ -585,7 +604,7 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
             routeLine = nil
             map.removeAnnotations(routeEnds); routeEnds = []
             if let r = radar.selectedRoute {
-                var coords = Geo.greatCircle(a.coordinate, r.destination.coordinate)
+                var coords = Geo.greatCircle(planes[a.hex]?.coordinate ?? a.coordinate, r.destination.coordinate)
                 let line = MKPolyline(coordinates: &coords, count: coords.count)
                 routeLine = line
                 map.addOverlay(line, level: .aboveRoads)
@@ -597,15 +616,16 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
     }
 
     private var lastTrailsVersion = -1
-    private func syncTrails(on map: MKMapView) {
+    private func syncTrails(on map: MKMapView, force: Bool = false) {
         let show = prefs.showTrails && radar.span.latitudeDelta < 5
-        guard radar.dataVersion != lastTrailsVersion || (!show && otherTrails != nil) else { return }
+        guard force || radar.dataVersion != lastTrailsVersion || (!show && otherTrails != nil) else { return }
         lastTrailsVersion = radar.dataVersion
         if let o = otherTrails { map.removeOverlay(o); otherTrails = nil }
         guard show else { return }
         let lines: [MKPolyline] = radar.visible.compactMap { a in
             guard a.hex != radar.selectedHex, let t = radar.trails[a.hex], t.count > 1 else { return nil }
-            var coords = t.map(\.coordinate) + [a.coordinate]
+            // Termina donde está el ícono ahora (no en la última posición reportada)
+            var coords = t.map(\.coordinate) + [planes[a.hex]?.coordinate ?? a.coordinate]
             return MKPolyline(coordinates: &coords, count: coords.count)
         }
         guard !lines.isEmpty else { return }
@@ -678,6 +698,13 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
                 let r = MKMultiPolylineRenderer(multiPolyline: m)
                 r.strokeColor = PColor.white.withAlphaComponent(0.35)
                 r.lineWidth = 1.3
+                return r
+            }
+            if let p = overlay as? MKPolyline, p === connector {
+                let r = MKPolylineRenderer(polyline: p)
+                r.strokeColor = connectorColor
+                r.lineWidth = 3.5
+                r.lineCap = .round
                 return r
             }
             if let p = overlay as? MKPolyline, p === selectedTrail {
