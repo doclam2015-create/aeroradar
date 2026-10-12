@@ -338,6 +338,9 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
     private var lastRouteKey = ""
     private var lastTrailCount = -1
     private var lastWasCockpit = false
+    private var lastFollow = false
+    /// Mientras la cámara vuela a un destino no se re-emiten movimientos (si no, la animación nunca termina)
+    private var flyingUntil = Date.distantPast
     private var interacting = false
     private var programmatic = false
     private var timer: Timer?
@@ -395,9 +398,11 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
             lastCamera = req.id
             apply(req, on: map)
         }
-        if radar.cockpit != lastWasCockpit {
+        if radar.cockpit != lastWasCockpit || radar.follow != lastFollow {
+            let starting = (radar.cockpit && !lastWasCockpit) || (radar.follow && !lastFollow)
             lastWasCockpit = radar.cockpit
-            if radar.cockpit { followCamera(animated: true) }
+            lastFollow = radar.follow
+            if starting { followCamera(animated: true, initial: true) }
         }
         let selChanged = radar.selectedHex != lastSelected
         if radar.dataVersion != lastVersion || selChanged {
@@ -520,8 +525,10 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
         }
     }
 
-    private func followCamera(animated: Bool) {
+    private func followCamera(animated: Bool, initial: Bool = false) {
         guard let map, radar.follow, let a = radar.selected else { return }
+        guard initial || Date() >= flyingUntil else { return }
+        if initial { flyingUntil = Date().addingTimeInterval(3) }
         let c = planes[a.hex]?.coordinate ?? a.coordinate
         let cam: MKMapCamera
         if radar.cockpit {
@@ -537,6 +544,7 @@ final class RadarMapCoordinator: NSObject, MKMapViewDelegate {
 
     private func apply(_ req: CameraRequest, on map: MKMapView) {
         programmatic = true
+        flyingUntil = Date().addingTimeInterval(2)
         if let r = req.region {
             map.setRegion(map.regionThatFits(r), animated: true)
         } else if let c = req.center {

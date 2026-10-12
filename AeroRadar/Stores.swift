@@ -7,9 +7,11 @@ import UserNotifications
 // MARK: - Preferencias
 
 enum UnitSystem: String, CaseIterable, Identifiable {
-    case aviation, metric, imperial
+    case both, aviation, metric, imperial
     var id: String { rawValue }
-    var label: String { ["aviation": "Aeronáutico (ft, kt)", "metric": "Métrico (m, km/h)", "imperial": "Imperial (ft, mph)"][rawValue]! }
+    var label: String {
+        ["both": "Aeronáutico + métrico", "aviation": "Aeronáutico (ft, kt)", "metric": "Métrico (m, km/h)", "imperial": "Imperial (ft, mph)"][rawValue]!
+    }
 }
 
 enum MapLook: String, CaseIterable, Identifiable {
@@ -33,9 +35,9 @@ final class Prefs {
     var maxAircraft: Int { didSet { d.set(maxAircraft, forKey: "maxAircraft") } }
 
     init() {
-        d.register(defaults: ["units": "aviation", "mapLook": "dark", "refresh": 6.0, "showLabels": true, "showAirports": true,
+        d.register(defaults: ["units": "both", "mapLook": "dark", "refresh": 6.0, "showLabels": true, "showAirports": true,
                               "showTerminator": false, "showTrails": true, "smoothMotion": true, "emergencyAlerts": true, "maxAircraft": 500])
-        units = UnitSystem(rawValue: d.string(forKey: "units") ?? "") ?? .aviation
+        units = UnitSystem(rawValue: d.string(forKey: "units") ?? "") ?? .both
         mapLook = MapLook(rawValue: d.string(forKey: "mapLook") ?? "") ?? .dark
         refresh = d.double(forKey: "refresh")
         showLabels = d.bool(forKey: "showLabels")
@@ -61,12 +63,18 @@ final class Prefs {
     func altitude(_ ft: Int?, ground: Bool = false) -> String {
         if ground { return "En tierra" }
         guard let ft else { return "—" }
-        return units == .metric ? "\(Int(Double(ft) * 0.3048).formatted()) m" : "\(ft.formatted()) ft"
+        let m = "\(Int(Double(ft) * 0.3048).formatted()) m"
+        switch units {
+        case .metric: return m
+        case .both: return "\(ft.formatted()) ft · \(m)"
+        default: return "\(ft.formatted()) ft"
+        }
     }
     func speed(_ kt: Double?) -> String {
         guard let kt else { return "—" }
         switch units {
         case .aviation: return "\(Int(kt)) kt"
+        case .both: return "\(Int(kt)) kt · \(Int(kt * 1.852)) km/h"
         case .metric: return "\(Int(kt * 1.852)) km/h"
         case .imperial: return "\(Int(kt * 1.15078)) mph"
         }
@@ -74,11 +82,17 @@ final class Prefs {
     func vrate(_ fpm: Int?) -> String {
         guard let fpm else { return "—" }
         let arrow = fpm > 100 ? "↑" : fpm < -100 ? "↓" : "→"
-        return units == .metric ? "\(arrow) \(abs(Int(Double(fpm) * 0.00508 * 10)) / 10) m/s" : "\(arrow) \(abs(fpm).formatted()) ft/min"
+        let ms = String(format: "%.1f m/s", abs(Double(fpm) * 0.00508)).replacingOccurrences(of: ".", with: ",")
+        switch units {
+        case .metric: return "\(arrow) \(ms)"
+        case .both: return "\(arrow) \(abs(fpm).formatted()) ft/min · \(ms)"
+        default: return "\(arrow) \(abs(fpm).formatted()) ft/min"
+        }
     }
     func distance(_ km: Double) -> String {
         switch units {
         case .aviation: return "\(Int(km / 1.852).formatted()) NM"
+        case .both: return "\(Int(km).formatted()) km · \(Int(km / 1.852).formatted()) NM"
         case .metric: return "\(Int(km).formatted()) km"
         case .imperial: return "\(Int(km * 0.621371).formatted()) mi"
         }

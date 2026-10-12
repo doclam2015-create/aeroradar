@@ -158,7 +158,7 @@ struct HoverCard: View {
     private func kv(_ k: String, _ v: String) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(k).font(.caption2).foregroundStyle(.secondary)
-            Text(v).font(.callout.weight(.semibold)).lineLimit(1)
+            Text(v).font(.callout.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.8)
         }
         .frame(width: 160, alignment: .leading)
     }

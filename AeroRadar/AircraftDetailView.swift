@@ -202,7 +202,7 @@ struct AircraftDetailView: View {
     private func tile(_ t: String, _ v: String, _ icon: String, _ c: Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(t, systemImage: icon).font(.caption2).foregroundStyle(c).labelStyle(.titleAndIcon)
-            Text(v).font(.subheadline.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.6)
+            Text(v.replacingOccurrences(of: " · ", with: "\n")).font(.subheadline.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)

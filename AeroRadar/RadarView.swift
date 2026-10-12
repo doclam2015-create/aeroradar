@@ -259,7 +259,8 @@ struct CompactCard: View {
     private func stat(_ t: String, _ v: String) -> some View {
         VStack(spacing: 2) {
             Text(t).font(.caption2).foregroundStyle(.secondary)
-            Text(v).font(.callout.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+            Text(v.replacingOccurrences(of: " · ", with: "\n")).font(.callout.weight(.semibold)).lineLimit(2).minimumScaleFactor(0.7)
+                .multilineTextAlignment(.center)
         }.frame(maxWidth: .infinity)
     }
 }
