@@ -329,6 +329,7 @@ struct SettingsView: View {
                 Section("Fuentes de datos (gratuitas)") {
                     Link("adsb.lol — posiciones ADS-B en vivo (ODbL)", destination: URL(string: "https://adsb.lol")!)
                     Link("adsb.fi — red ADS-B de respaldo", destination: URL(string: "https://adsb.fi")!)
+                    Link("airplanes.live — red comunitaria (vía su mapa web)", destination: URL(string: "https://airplanes.live")!)
                     Link("OpenSky Network — receptores propios (mejor cobertura en Sudamérica)", destination: URL(string: "https://opensky-network.org")!)
                     Link("Wikipedia — fotos y descripción de modelos", destination: URL(string: "https://es.wikipedia.org")!)
                     Link("adsbdb.com — rutas y fichas de aeronaves", destination: URL(string: "https://www.adsbdb.com")!)
@@ -393,6 +394,7 @@ struct WatchlistView: View {
 
 struct OpenSkySection: View {
     @Environment(RadarStore.self) private var radar
+    @Environment(Prefs.self) private var prefs
     @State private var os = OpenSkyClient.shared
     @State private var id = ""
     @State private var secret = ""
@@ -401,7 +403,9 @@ struct OpenSkySection: View {
     var body: some View {
         Section {
             LabeledContent("Aviones ADS-B comunitario", value: "\(radar.adsbCount)")
+            LabeledContent("Aviones extra de airplanes.live", value: "\(radar.airplanesLiveExtra)")
             LabeledContent("Aviones extra de OpenSky", value: "\(radar.openSkyExtra)")
+            Toggle("Usar airplanes.live", isOn: Bindable(prefs).useAirplanesLive)
             LabeledContent("Cupo OpenSky hoy", value: "\(os.usedToday) de \(os.dailyBudget) créditos")
             if let e = os.lastError { Label(e, systemImage: "exclamationmark.triangle").foregroundStyle(.orange).font(.caption) }
             if os.hasAccount && !editing {
@@ -424,7 +428,7 @@ struct OpenSkySection: View {
                 Button("Conectar cuenta gratuita de OpenSky") { editing = true }
             }
         } header: {
-            Text("OpenSky Network")
+            Text("Fuentes extra")
         } footer: {
             Text("Sin cuenta: 400 créditos al día (la app los reparte para que duren). Con una cuenta gratuita: 4.000 créditos y además la trayectoria de los aviones que solo ve OpenSky. Para obtenerla: crea una cuenta en opensky-network.org → Account → API Client → descarga credentials.json y copia aquí el client ID y el secret. Se guardan en el llavero del dispositivo.")
         }

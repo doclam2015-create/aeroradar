@@ -49,6 +49,15 @@ enum API {
         return try JSONDecoder().decode(ACResponse.self, from: data).ac
     }
 
+    /// airplanes.live: red comunitaria con buena cobertura en Sudamérica. Su API oficial rechaza nuestras consultas,
+    /// así que se usa el endpoint de su mapa web (autorizado por el usuario, uso personal y moderado).
+    static func airplanesLive(south: Double, north: Double, west: Double, east: Double) async throws -> [Aircraft] {
+        let url = String(format: "https://globe.airplanes.live/re-api/?box=%.3f,%.3f,%.3f,%.3f",
+                         max(-90, south), min(90, north), max(-180, west), min(180, east))
+        let data = try await get(url, headers: ["Referer": "https://globe.airplanes.live/"])
+        return try JSONDecoder().decode(ACResponse.self, from: data).ac
+    }
+
     /// OpenSky Network (acceso anónimo, cupo diario limitado): complementa zonas con poca cobertura.
     static func openSky(south: Double, north: Double, west: Double, east: Double) async throws -> [Aircraft] {
         let url = String(format: "https://opensky-network.org/api/states/all?lamin=%.3f&lomin=%.3f&lamax=%.3f&lomax=%.3f",

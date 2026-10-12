@@ -33,10 +33,11 @@ final class Prefs {
     var smoothMotion: Bool { didSet { d.set(smoothMotion, forKey: "smoothMotion") } }
     var emergencyAlerts: Bool { didSet { d.set(emergencyAlerts, forKey: "emergencyAlerts") } }
     var maxAircraft: Int { didSet { d.set(maxAircraft, forKey: "maxAircraft") } }
+    var useAirplanesLive: Bool { didSet { d.set(useAirplanesLive, forKey: "useAirplanesLive") } }
 
     init() {
         d.register(defaults: ["units": "both", "mapLook": "dark", "refresh": 6.0, "showLabels": true, "showAirports": true,
-                              "showTerminator": false, "showTrails": true, "smoothMotion": true, "emergencyAlerts": true, "maxAircraft": 500])
+                              "showTerminator": false, "showTrails": true, "smoothMotion": true, "emergencyAlerts": true, "maxAircraft": 500, "useAirplanesLive": true])
         units = UnitSystem(rawValue: d.string(forKey: "units") ?? "") ?? .both
         mapLook = MapLook(rawValue: d.string(forKey: "mapLook") ?? "") ?? .dark
         refresh = d.double(forKey: "refresh")
@@ -47,6 +48,7 @@ final class Prefs {
         smoothMotion = d.bool(forKey: "smoothMotion")
         emergencyAlerts = d.bool(forKey: "emergencyAlerts")
         maxAircraft = d.integer(forKey: "maxAircraft")
+        useAirplanesLive = d.bool(forKey: "useAirplanesLive")
     }
 
     var mapStyle: MapStyle {
@@ -362,6 +364,9 @@ final class RadarStore {
     /// Aviones aportados por cada fuente en la última actualización
     private(set) var adsbCount = 0
     private(set) var openSkyExtra = 0
+    private(set) var airplanesLiveExtra = 0
+    private var airplanesLiveCache: [Aircraft] = []
+    private var airplanesLiveAt = Date.distantPast
     private var openSkyBox: (s: Double, n: Double, w: Double, e: Double)?
 
     private var box: (s: Double, n: Double, w: Double, e: Double) {
@@ -373,13 +378,24 @@ final class RadarStore {
         let b = box
         var list: [Aircraft] = []
         var adsbFailed = false
+        // airplanes.live en paralelo (cada ≥10 s y sin vistas mundiales)
+        let useAL = prefs.useAirplanesLive && span.latitudeDelta < 70 && Date().timeIntervalSince(airplanesLiveAt) >= 10
+        if useAL { airplanesLiveAt = .now }
+        async let alTask: [Aircraft]? = useAL ? try? API.airplanesLive(south: b.s, north: b.n, west: b.w, east: b.e) : nil
         do {
             list = try await API.aircraft(south: b.s, north: b.n, west: b.w, east: b.e)
         } catch {
             do { list = try await API.aircraft(center: center, radiusNM: radiusNM * 1.15) }
-            catch { adsbFailed = true }   // seguimos: OpenSky puede cubrir la zona
+            catch { adsbFailed = true }   // seguimos: las otras fuentes pueden cubrir la zona
         }
-        adsbCount = list.count
+        if let al = await alTask { airplanesLiveCache = al }
+        if !prefs.useAirplanesLive { airplanesLiveCache = [] }
+        airplanesLiveCache.removeAll { Date().timeIntervalSince($0.fetchedAt) > 60 }
+        let adsbHex = Set(list.map(\.hex))
+        let alExtra = airplanesLiveCache.filter { !adsbHex.contains($0.hex) && $0.lat > b.s && $0.lat < b.n && $0.lon > b.w && $0.lon < b.e }
+        airplanesLiveExtra = alExtra.count
+        list += alExtra
+        adsbCount = list.count - alExtra.count
         // OpenSky suma receptores propios: en Sudamérica ve más del doble que las redes comunitarias.
         let os = OpenSkyClient.shared
         let cost = OpenSkyClient.cost(areaSqDeg: (b.n - b.s) * (b.e - b.w))
